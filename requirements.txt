@@ -1,0 +1,31 @@
+# --- Backend / API ---
+fastapi
+uvicorn[standard]
+
+# --- Base de dados ---
+sqlalchemy>=2.0
+alembic
+asyncpg          # driver async para PostgreSQL
+
+# --- Validação ---
+pydantic>=2.0
+pydantic-settings   # para carregar .env de forma tipada
+
+# --- LLM ---
+groq
+
+# --- Tools do agente ---
+ddgs              # busca web grátis (ex-duckduckgo-search)
+httpx             # requisições HTTP async
+trafilatura       # extração de texto de HTML
+pymupdf           # leitura de PDFs (importa como "fitz")
+
+# --- Observabilidade ---
+structlog
+
+# --- Config/env ---
+python-dotenv
+
+# --- Testes ---
+pytest
+pytest-asyncio

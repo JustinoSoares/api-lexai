@@ -133,3 +133,32 @@ async def test_run_agent_max_iterations_without_source_returns_fallback(mock_get
 
     assert result.answer == orchestrator.FALLBACK_MESSAGE
     assert result.source_urls == []
+
+def test_ground_windows_inclui_artigo_relevante_fora_do_inicio():
+    from app.agent.orchestrator import _ground_windows
+
+    texto = (
+        "LEI TESTE\n" + "A" * 30000 + "\n"
+        "Artigo 23.º (Arquivo)\n"
+        "Os registos devem ser arquivados por 10 (dez) anos.\n"
+    )
+    out = _ground_windows(texto, "por quanto tempo arquivados os registos?", budget=5000)
+    assert "Artigo 23.º" in out
+    assert "10 (dez) anos" in out
+
+
+def test_ground_windows_sem_keywords_devolve_inicio():
+    from app.agent.orchestrator import _ground_windows
+
+    texto = "LEI X\n" + "B" * 10000
+    out = _ground_windows(texto, "o que é a lei?", budget=5000)
+    assert out.startswith("LEI X")
+    assert len(out) <= 5000
+
+
+def test_ground_windows_respeita_orcamento():
+    from app.agent.orchestrator import _ground_windows
+
+    texto = "LEI Y\n" + ("Artigo 1.º texto " + "C" * 5000) * 30
+    out = _ground_windows(texto, "artigo 1 texto", budget=4000)
+    assert len(out) <= 4000

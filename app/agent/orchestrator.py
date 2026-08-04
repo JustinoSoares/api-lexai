@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -127,6 +128,65 @@ def _has_reliable_source(source_urls: set[str]) -> bool:
 MAX_GROUND_CHARS = 20000
 PRIMARY_DOMAIN = "lex.ao"
 
+_GROUND_STOPWORDS = {
+    "a", "o", "os", "as", "de", "do", "da", "dos", "das", "é", "que", "em",
+    "para", "por", "com", "um", "uma", "se", "no", "na", "nos", "nas", "não",
+    "qual", "ser", "ao", "aos", "pelo", "pela", "pelos", "pelas", "mais",
+    "menos", "tem", "ter", "como", "ou", "sobre", "entre", "são", "deve",
+    "devem", "qual", "quanto", "prazo", "fazer", "feita", "deve", "exigir",
+    "após", "pos", "antes", "ser", "está", "esta", "esse", "essa",
+}
+
+_ARTICLE_HEADER_RE = re.compile(r"(?im)^\s*artigo\s+\d{1,3}\s*[.º°]*[^.\n]*")
+
+
+def _ground_keywords(query: str) -> list[str]:
+    words = re.findall(r"[a-zA-ZÀ-ÿ]{4,}", query.lower())
+    return [w for w in words if w not in _GROUND_STOPWORDS]
+
+
+def _ground_windows(text: str, query: str, budget: int) -> str:
+    """Selecciona do diploma o início e as secções de artigos relevantes.
+
+    Mantém o orçamento de tokens (budget de chars) mas, em vez de apenas o
+    começo do diploma, inclui também o artigo cujo cabeçalho acompanha termos
+    da pergunta — o que antes ficava de fora e levava o LLM a adivinhar.
+    """
+    header = text[:1200]
+    keywords = _ground_keywords(query)
+    if not keywords:
+        return text[:budget]
+
+    headers = list(_ARTICLE_HEADER_RE.finditer(text))
+    relevant: list[int] = []
+    for kw in keywords:
+        pos = text.lower().find(kw)
+        if pos == -1:
+            continue
+        # cabeçalho de artigo imediatamente antes da ocorrência do termo
+        prev = None
+        for m in headers:
+            if m.start() > pos:
+                break
+            prev = m
+        if prev is not None and prev.start() not in relevant:
+            relevant.append(prev.start())
+
+    if not relevant:
+        return text[:budget]
+
+    per_section = max(1000, budget // max(1, len(relevant)))
+    sections = []
+    used = len(header) + 200
+    for start in sorted(relevant):
+        if used >= budget:
+            break
+        end = min(start + per_section, len(text))
+        sections.append(text[start:end])
+        used += end - start + 200
+
+    return "\n\n---\n\n".join([header, *sections])[:budget]
+
 
 def _source_rank(url: str) -> tuple[int, int]:
     """Prioridade de leitura de uma URL: páginas HTML de diplomas em lex.ao primeiro."""
@@ -152,13 +212,15 @@ async def _ground_on_primary(
     messages: list[dict],
     tool_calls_log: list[dict],
     primary_url: str | None = None,
+    query: str = "",
 ) -> None:
     """Lê o diploma da fonte primária (Lex.ao) e injeta o texto no contexto.
 
     Usa `primary_url` (resolvida do catálogo Lex.ao) quando disponível, para
     garantir que se lê o diploma CORRECTO; senão cai para a primeira URL de
     Lex.ao devolvida pela pesquisa. Isto evita ler diplomas errados e ancorar
-    a resposta em snippets.
+    a resposta em snippets. O texto é seleccionado por janelas em torno dos
+    artigos relevantes à pergunta, dentro do orçamento de tokens.
     """
     url = primary_url or _pick_primary_url(source_urls)
     if not url:
@@ -171,7 +233,7 @@ async def _ground_on_primary(
         return
     if not isinstance(text, str) or not text.strip():
         return
-    text = text[:MAX_GROUND_CHARS]
+    text = _ground_windows(text, query, MAX_GROUND_CHARS)
     source_urls.add(url)
     tc_id = f"ground_{len(tool_calls_log)}"
     messages.append(
@@ -281,6 +343,7 @@ async def run_agent(question: str, history: list[dict] | None = None) -> AgentRe
                 messages,
                 tool_calls_log,
                 primary_url=resolved["url"] if resolved else None,
+                query=question,
             )
 
     logger.warning("agent_max_iterations_reached", question=question)

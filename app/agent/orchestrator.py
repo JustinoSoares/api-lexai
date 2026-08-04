@@ -10,7 +10,7 @@ import structlog
 
 from app.agent.llm import get_groq_client
 from app.agent.system_prompt import get_system_prompt
-from app.agent.tools.cache_lookup import cache_lookup_tool
+from app.agent.tools.cache_lookup import cache_lookup_tool, cache_store
 from app.agent.tools.fetch_html import fetch_html_tool
 from app.agent.tools.fetch_pdf import fetch_pdf_tool
 from app.agent.tools.web_search import web_search_tool
@@ -86,15 +86,17 @@ TOOLS: list[dict] = [
         "function": {
             "name": "cache_lookup_tool",
             "description": (
-                "Consulta a cache local de documentos legais para uma URL já capturada. "
-                "Usa primeiro, antes de fazer download, para evitar trabalho repetido."
+                "Consulta a cache local de documentos legais por termos relacionados à pergunta. "
+                "USA SEMPRE ANTES de web_search_tool, para evitar trabalho repetido e reutilizar "
+                "documentos já capturados. Devolve documentos em cache (URL, título, snippet)."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "URL do documento."},
+                    "query": {"type": "string", "description": "Termos relacionados à pergunta."},
+                    "limit": {"type": "integer", "description": "Nº máximo de resultados."},
                 },
-                "required": ["url"],
+                "required": ["query"],
             },
         },
     },
@@ -137,6 +139,19 @@ def _record_sources(source_urls: set[str], name: str, result: Any) -> None:
 def _has_reliable_source(source_urls: set[str]) -> bool:
     """Indica se o agente recolheu pelo menos uma fonte concreta e verificável."""
     return bool(source_urls)
+
+
+async def _cache_fetched_document(tool: str, arguments: dict, text: str) -> None:
+    """Grava o conteúdo extraído na cache (law_cache) para reutilização futura."""
+    url = (arguments.get("url") or "").strip()
+    if not url or not text.strip():
+        return
+    title = text.splitlines()[0][:255] if text.strip() else url
+    try:
+        await cache_store(url=url, title=title, text=text)
+        logger.info("agent_cached_document", tool=tool, url=url)
+    except Exception as exc:
+        logger.warning("agent_cache_store_failed", tool=tool, url=url, error=str(exc))
 
 
 async def run_agent(question: str, history: list[dict] | None = None) -> AgentResult:
@@ -202,6 +217,11 @@ async def run_agent(question: str, history: list[dict] | None = None) -> AgentRe
             try:
                 result = await _execute_tool(name, arguments)
                 _record_sources(source_urls, name, result)
+                if (
+                    name in {"fetch_html_tool", "fetch_pdf_tool"}
+                    and isinstance(result, str)
+                ):
+                    await _cache_fetched_document(name, arguments, result)
                 content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
             except Exception as exc:
                 logger.warning("agent_tool_error", tool=name, error=str(exc))

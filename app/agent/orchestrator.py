@@ -5,14 +5,15 @@ import inspect
 import json
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 import structlog
 
 from app.agent.llm import get_groq_client
 from app.agent.system_prompt import get_system_prompt
-from app.agent.tools.cache_lookup import cache_lookup_tool, cache_store
 from app.agent.tools.fetch_html import fetch_html_tool
 from app.agent.tools.fetch_pdf import fetch_pdf_tool
+from app.agent.tools.lexao import resolve_lexao_doc
 from app.agent.tools.web_search import web_search_tool
 from app.core.config import settings
 
@@ -33,9 +34,11 @@ TOOLS: list[dict] = [
         "function": {
             "name": "web_search_tool",
             "description": (
-                "Pesquisa na web por legislação angolana e fontes jurídicas, "
-                "priorizando domínios de referência (Diário da República, portais jurídicos). "
-                "Usa antes de responder a perguntas sobre leis que desconheças."
+                "Pesquisa na web por legislação angolana e fontes jurídicas. "
+                "Prioriza sempre o portal Lex.ao (https://lex.ao), a fonte principal, "
+                "e domínios de referência (Diário da República, Assembleia Nacional). "
+                "Usa antes de responder a qualquer pergunta sobre leis, para citar "
+                "legislação verificada."
             ),
             "parameters": {
                 "type": "object",
@@ -81,32 +84,12 @@ TOOLS: list[dict] = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "cache_lookup_tool",
-            "description": (
-                "Consulta a cache local de documentos legais por termos relacionados à pergunta. "
-                "USA SEMPRE ANTES de web_search_tool, para evitar trabalho repetido e reutilizar "
-                "documentos já capturados. Devolve documentos em cache (URL, título, snippet)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Termos relacionados à pergunta."},
-                    "limit": {"type": "integer", "description": "Nº máximo de resultados."},
-                },
-                "required": ["query"],
-            },
-        },
-    },
 ]
 
 TOOL_REGISTRY: dict[str, Any] = {
     "web_search_tool": web_search_tool,
     "fetch_html_tool": fetch_html_tool,
     "fetch_pdf_tool": fetch_pdf_tool,
-    "cache_lookup_tool": cache_lookup_tool,
 }
 
 
@@ -125,8 +108,8 @@ async def _execute_tool(name: str, arguments: dict) -> Any:
 
 
 def _record_sources(source_urls: set[str], name: str, result: Any) -> None:
-    """Regista URLs de fontes a partir do resultado das tools fetch/cache/busca."""
-    if name in {"fetch_html_tool", "fetch_pdf_tool", "cache_lookup_tool"}:
+    """Regista URLs de fontes a partir do resultado das tools fetch/busca."""
+    if name in {"fetch_html_tool", "fetch_pdf_tool"}:
         if isinstance(result, dict) and result.get("found"):
             source_urls.add(result["url"])
     elif name == "web_search_tool" and isinstance(result, list):
@@ -141,38 +124,100 @@ def _has_reliable_source(source_urls: set[str]) -> bool:
     return bool(source_urls)
 
 
-async def _cache_fetched_document(tool: str, arguments: dict, text: str) -> None:
-    """Grava o conteúdo extraído na cache (law_cache) para reutilização futura."""
-    url = (arguments.get("url") or "").strip()
-    if not url or not text.strip():
+MAX_GROUND_CHARS = 20000
+PRIMARY_DOMAIN = "lex.ao"
+
+
+def _source_rank(url: str) -> tuple[int, int]:
+    """Prioridade de leitura de uma URL: páginas HTML de diplomas em lex.ao primeiro."""
+    host = (urlparse(url).netloc or "").lower().removeprefix("www.")
+    if host.endswith(PRIMARY_DOMAIN):
+        if "/docs/" in url:
+            if url.lower().endswith(".pdf"):
+                return (2, 0)
+            return (1, 0)
+        return (3, 0)
+    return (4, 0)
+
+
+def _pick_primary_url(source_urls: set[str]) -> str | None:
+    """Escolhe a URL da fonte primária (lex.ao) para leitura integral."""
+    if not source_urls:
+        return None
+    return min(source_urls, key=_source_rank)
+
+
+async def _ground_on_primary(
+    source_urls: set[str],
+    messages: list[dict],
+    tool_calls_log: list[dict],
+    primary_url: str | None = None,
+) -> None:
+    """Lê o diploma da fonte primária (Lex.ao) e injeta o texto no contexto.
+
+    Usa `primary_url` (resolvida do catálogo Lex.ao) quando disponível, para
+    garantir que se lê o diploma CORRECTO; senão cai para a primeira URL de
+    Lex.ao devolvida pela pesquisa. Isto evita ler diplomas errados e ancorar
+    a resposta em snippets.
+    """
+    url = primary_url or _pick_primary_url(source_urls)
+    if not url:
         return
-    title = text.splitlines()[0][:255] if text.strip() else url
+    fetch = fetch_pdf_tool if url.lower().endswith(".pdf") else fetch_html_tool
     try:
-        await cache_store(url=url, title=title, text=text)
-        logger.info("agent_cached_document", tool=tool, url=url)
+        text = await fetch(url)
     except Exception as exc:
-        logger.warning("agent_cache_store_failed", tool=tool, url=url, error=str(exc))
+        logger.warning("agent_ground_failed", url=url, error=str(exc))
+        return
+    if not isinstance(text, str) or not text.strip():
+        return
+    text = text[:MAX_GROUND_CHARS]
+    source_urls.add(url)
+    tc_id = f"ground_{len(tool_calls_log)}"
+    messages.append(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": tc_id,
+                    "type": "function",
+                    "function": {
+                        "name": "fetch_pdf_tool" if url.lower().endswith(".pdf") else "fetch_html_tool",
+                        "arguments": json.dumps({"url": url}),
+                    },
+                }
+            ],
+        }
+    )
+    messages.append({"role": "tool", "tool_call_id": tc_id, "content": text})
+    tool_calls_log.append({"tool": "fetch_pdf_tool" if url.lower().endswith(".pdf") else "fetch_html_tool", "arguments": {"url": url}, "id": tc_id})
+    logger.info("agent_grounded_source", url=url, chars=len(text))
 
 
 async def run_agent(question: str, history: list[dict] | None = None) -> AgentResult:
     """Executa o agente: chama o LLM, executa as tools pedidas e devolve a resposta final."""
     client = get_groq_client()
     system = {"role": "system", "content": get_system_prompt()}
-    messages: list[dict] = [
-        system,
-        *((history or [])[-6:]),  # contexto recente limitado
-        {"role": "user", "content": question},
-    ]
 
     tool_calls_log: list[dict] = []
     source_urls: set[str] = set()
 
-    for _ in range(MAX_ITERATIONS):
+    messages: list[dict] = [system]
+    messages.extend((history or [])[-6:])
+    messages.append({"role": "user", "content": question})
+
+    for i in range(MAX_ITERATIONS):
+        # Na primeira iteração força a busca web: o agente pesquisa sempre a
+        # legislação em vez de responder de memória. Depois segue tool_choice auto.
+        tool_choice = "auto"
+        if i == 0:
+            tool_choice = {"type": "function", "function": {"name": "web_search_tool"}}
         completion = await client.chat.completions.create(
             model=settings.llm_model,
             messages=messages,
             tools=TOOLS,
-            tool_choice="auto",
+            tool_choice=tool_choice,
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
         )
@@ -217,11 +262,6 @@ async def run_agent(question: str, history: list[dict] | None = None) -> AgentRe
             try:
                 result = await _execute_tool(name, arguments)
                 _record_sources(source_urls, name, result)
-                if (
-                    name in {"fetch_html_tool", "fetch_pdf_tool"}
-                    and isinstance(result, str)
-                ):
-                    await _cache_fetched_document(name, arguments, result)
                 content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
             except Exception as exc:
                 logger.warning("agent_tool_error", tool=name, error=str(exc))
@@ -229,6 +269,18 @@ async def run_agent(question: str, history: list[dict] | None = None) -> AgentRe
 
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": content}
+            )
+
+        # Após a busca garantida (iteração 0), lê o diploma da fonte primária
+        # para ancorar a resposta no conteúdo real em vez de snippets. Usa o
+        # catálogo Lex.ao para escolher o diploma correcto quando conhecido.
+        if i == 0:
+            resolved = resolve_lexao_doc(question)
+            await _ground_on_primary(
+                source_urls,
+                messages,
+                tool_calls_log,
+                primary_url=resolved["url"] if resolved else None,
             )
 
     logger.warning("agent_max_iterations_reached", question=question)

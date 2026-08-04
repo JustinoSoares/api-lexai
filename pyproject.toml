@@ -1,4 +1,4 @@
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = ["asyncio: teste assíncrono"]
+markers = ["asyncio: teste assíncrono", "e2e: teste de ponta-a-ponta com rede/LLM real (RUN_E2E=1)"]

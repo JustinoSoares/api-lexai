@@ -12,7 +12,9 @@ logger = structlog.get_logger(__name__)
 
 # Whitelist de domínios de fontes jurídicas angolanas de referência.
 # A lógica corresponde ao domínio e aos seus subdomínios.
+# `lex.ao` é a fonte primária e é além disso priorizada à frente das restantes.
 LEGAL_WHITELIST = {
+    "lex.ao",                      # Lex.ao — fonte primária de legislação angolana
     "diariodarepublica.ao",        # Diário da República (Boletim Oficial / publicação de leis)
     "governo.gov.ao",              # Governo de Angola
     "parlamento.ao",               # Assembleia Nacional (produção legislativa)
@@ -75,10 +77,35 @@ def web_search_tool(query: str, max_results: int = 5) -> list[dict]:
         logger.warning("web_search_disabled")
         return []
 
-    with DDGS() as ddgs:
-        raw = list(ddgs.text(query, max_results=max_results * 3))
+    results = list(_ddgs_search(query, max_results * 3))
 
-    results = [
+    # Pesquisa dirigida à fonte primária (lex.ao) para garantir que surge,
+    # e coloca-a sempre à frente dos restantes resultados.
+    lexao = list(_ddgs_search(f"site:lex.ao {query}", max_results * 2))
+    fresh = results + [r for r in lexao if r["href"] not in {x["href"] for x in results}]
+    fresh = _dedupe(fresh)
+
+    whitelisted = [r for r in fresh if _is_whitelisted(r["href"])]
+    other = [
+        r for r in fresh if not _is_whitelisted(r["href"]) and _has_legal_signal(r["href"], r["snippet"])
+    ]
+    fallback = [r for r in fresh if r not in whitelisted and r not in other]
+
+    primary = [r for r in whitelisted if "lex.ao" in r["href"]]
+    whitelisted = [r for r in whitelisted if r not in primary]
+
+    ranked = primary + whitelisted + other + fallback
+
+    for r in ranked:
+        logger.info("web_search_result", query=query, url=r["href"], whitelisted=_is_whitelisted(r["href"]))
+
+    return ranked[:max_results]
+
+
+def _ddgs_search(query: str, max_results: int) -> list[dict]:
+    with DDGS() as ddgs:
+        raw = list(ddgs.text(query, max_results=max_results))
+    return [
         {
             "title": item.get("title", ""),
             "href": item.get("href", ""),
@@ -87,15 +114,13 @@ def web_search_tool(query: str, max_results: int = 5) -> list[dict]:
         for item in raw
     ]
 
-    whitelisted = [r for r in results if _is_whitelisted(r["href"])]
-    other = [
-        r for r in results if not _is_whitelisted(r["href"]) and _has_legal_signal(r["href"], r["snippet"])
-    ]
-    fallback = [r for r in results if r not in whitelisted and r not in other]
 
-    ranked = whitelisted + other + fallback
-
-    for r in ranked:
-        logger.info("web_search_result", query=query, url=r["href"], whitelisted=_is_whitelisted(r["href"]))
-
-    return ranked[:max_results]
+def _dedupe(items: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    out: list[dict] = []
+    for item in items:
+        if item["href"] in seen:
+            continue
+        seen.add(item["href"])
+        out.append(item)
+    return out

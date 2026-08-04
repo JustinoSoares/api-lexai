@@ -1,12 +1,25 @@
 """Testes do endpoint POST /chat e dos esquemas de entrada/saída."""
 
+import uuid
+
+import pytest
 from fastapi.testclient import TestClient
 
 from app.agent.orchestrator import AgentResult
+from app.api.rate_limit import clear_rate_limits
+from app.core.config import settings
 from app.db.session import get_db
 from app.main import app
 from app.schemas import extract_disclaimer
 from app.schemas.chat import DEFAULT_DISCLAIMER
+
+
+@pytest.fixture(autouse=True)
+def _no_rate_limit():
+    clear_rate_limits()
+    settings.rate_limit_enabled = False
+    yield
+    settings.rate_limit_enabled = False
 
 
 class _FakeResult:
@@ -32,7 +45,7 @@ class _FakeSession:
     async def flush(self):
         for obj in self.added:
             if getattr(obj, "id", None) is None:
-                obj.id = 1
+                obj.id = uuid.uuid4()
 
     async def commit(self):
         self.committed = True
@@ -66,7 +79,7 @@ def test_chat_returns_structured_response(monkeypatch):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["conversation_id"] == 1
+    assert uuid.UUID(body["conversation_id"])
     assert body["answer"].startswith("Resposta jurídica")
     assert body["sources"] == ["https://lex.ao/lei-n-o-7-15"]
     assert body["disclaimer"] == "nota."
@@ -78,8 +91,10 @@ def test_chat_returns_structured_response(monkeypatch):
 
 
 def test_chat_reuses_conversation_and_passes_history(monkeypatch):
+    conv_id = uuid.uuid4()
+
     class _Conv:
-        id = 7
+        id = conv_id
         messages = [
             type("M", (), {"role": "user", "content": "Olá"})()
         ]
@@ -101,13 +116,13 @@ def test_chat_reuses_conversation_and_passes_history(monkeypatch):
     try:
         resp = client.post(
             "/chat",
-            json={"question": "E quanto ao pagamento?", "conversation_id": 7},
+            json={"question": "E quanto ao pagamento?", "conversation_id": str(conv_id)},
         )
     finally:
         app.dependency_overrides.clear()
 
     assert resp.status_code == 200
-    assert resp.json()["conversation_id"] == 7
+    assert resp.json()["conversation_id"] == str(conv_id)
     assert seen["history"] == [{"role": "user", "content": "Olá"}]
 
 
@@ -117,7 +132,10 @@ def test_chat_unknown_conversation_returns_404(monkeypatch):
     app.dependency_overrides[get_db] = lambda: fake
     client = TestClient(app)
     try:
-        resp = client.post("/chat", json={"question": "Pergunta", "conversation_id": 999})
+        resp = client.post(
+            "/chat",
+            json={"question": "Pergunta", "conversation_id": str(uuid.uuid4())},
+        )
     finally:
         app.dependency_overrides.clear()
 
@@ -140,3 +158,48 @@ def test_extract_disclaimer():
     assert extract_disclaimer("x\n\n4. **Disclaimer**: nota informativa.") == "nota informativa."
     assert extract_disclaimer("apenas resposta") == DEFAULT_DISCLAIMER
     assert extract_disclaimer("") == DEFAULT_DISCLAIMER
+
+def _mock_run_agent():
+    async def fake_run(question, history=None):
+        return AgentResult(answer="ok", tool_calls=[], source_urls=[])
+    return fake_run
+
+
+def test_rate_limit_blocka_apos_maximo(monkeypatch):
+    clear_rate_limits()
+    settings.rate_limit_enabled = True
+    settings.rate_limit_max_requests = 2
+    settings.rate_limit_window_seconds = 60
+    monkeypatch.setattr("app.api.routes.chat.run_agent", _mock_run_agent())
+    app.dependency_overrides[get_db] = lambda: _FakeSession()
+    client = TestClient(app)
+    try:
+        assert client.post("/chat", json={"question": "q1"}).status_code == 200
+        assert client.post("/chat", json={"question": "q2"}).status_code == 200
+        r3 = client.post("/chat", json={"question": "q3"})
+        assert r3.status_code == 429
+        assert r3.headers.get("Retry-After")
+    finally:
+        app.dependency_overrides.clear()
+        settings.rate_limit_enabled = False
+
+
+def test_rate_limit_por_user_header(monkeypatch):
+    clear_rate_limits()
+    settings.rate_limit_enabled = True
+    settings.rate_limit_max_requests = 1
+    settings.rate_limit_window_seconds = 60
+    monkeypatch.setattr("app.api.routes.chat.run_agent", _mock_run_agent())
+    app.dependency_overrides[get_db] = lambda: _FakeSession()
+    client = TestClient(app)
+    try:
+        headers = {"X-User-Id": "alice"}
+        assert client.post("/chat", json={"question": "q"}, headers=headers).status_code == 200
+        assert client.post("/chat", json={"question": "q"}, headers=headers).status_code == 429
+        assert (
+            client.post("/chat", json={"question": "q"}, headers={"X-User-Id": "bob"}).status_code
+            == 200
+        )
+    finally:
+        app.dependency_overrides.clear()
+        settings.rate_limit_enabled = False

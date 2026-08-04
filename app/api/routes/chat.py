@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agent.orchestrator import run_agent
+from app.api.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models import Conversation, Message
 from app.schemas import ChatRequest, ChatResponse, extract_disclaimer
@@ -21,7 +22,12 @@ def _history(conversation: Conversation) -> list[dict]:
     return [{"role": m.role, "content": m.content} for m in conversation.messages]
 
 
-@router.post("/chat", response_model=ChatResponse, summary="Fazer uma pergunta ao agente")
+@router.post(
+    "/chat",
+    response_model=ChatResponse,
+    summary="Fazer uma pergunta ao agente",
+    dependencies=[Depends(rate_limit)],
+)
 async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db)) -> ChatResponse:
     conversation: Conversation | None = None
     if payload.conversation_id is not None:

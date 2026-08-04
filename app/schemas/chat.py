@@ -1,6 +1,7 @@
 """Esquemas Pydantic de entrada/saída da API."""
 
 import re
+import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,8 +18,8 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     question: str = Field(..., min_length=1, max_length=2000, description="Pergunta jurídica.")
-    conversation_id: int | None = Field(
-        None, description="Identificador de conversa para manter contexto (opcional)."
+    conversation_id: uuid.UUID | None = Field(
+        None, description="Identificador UUID da conversa para manter contexto (opcional)."
     )
 
 
@@ -31,7 +32,7 @@ class ChatSource(BaseModel):
 class ChatResponse(BaseModel):
     """Resposta estruturada do agente."""
 
-    conversation_id: int
+    conversation_id: uuid.UUID
     question: str
     answer: str
     sources: list[str] = Field(default_factory=list, description="URLs das fontes citadas.")

@@ -1,6 +1,7 @@
+import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text, func
+from sqlalchemy import DateTime, String, Text, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -13,7 +14,9 @@ class LawCache(Base):
 
     __tablename__ = "law_cache"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
     url: Mapped[str] = mapped_column(String(2048), unique=True, nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     artigo: Mapped[str | None] = mapped_column(String(255), nullable=True)

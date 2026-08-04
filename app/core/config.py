@@ -27,6 +27,11 @@ class Settings(BaseSettings):
 
     web_search_enabled: bool = True
 
+    rate_limit_enabled: bool = False
+    rate_limit_max_requests: int = 10
+    rate_limit_window_seconds: int = 60
+    rate_limit_user_header: str = "X-User-Id"
+
 
 @lru_cache
 def get_settings() -> Settings:

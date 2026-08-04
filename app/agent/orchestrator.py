@@ -18,7 +18,14 @@ from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
 
-MAX_ITERATIONS = 6
+MAX_ITERATIONS = 4
+
+FALLBACK_MESSAGE = (
+    "Não consegui encontrar uma base legal suficientemente fiável e verificada para "
+    "responder a esta questão com rigor, e é preferível não arriscar uma resposta "
+    "incorrecta. Recomendo que consultes um jurista ou advogado inscrito na ordem "
+    "dos advogados de Angola, para aconselhamento adequado ao teu caso concreto."
+)
 
 TOOLS: list[dict] = [
     {
@@ -127,6 +134,11 @@ def _record_sources(source_urls: set[str], name: str, result: Any) -> None:
                 source_urls.add(href)
 
 
+def _has_reliable_source(source_urls: set[str]) -> bool:
+    """Indica se o agente recolheu pelo menos uma fonte concreta e verificável."""
+    return bool(source_urls)
+
+
 async def run_agent(question: str, history: list[dict] | None = None) -> AgentResult:
     """Executa o agente: chama o LLM, executa as tools pedidas e devolve a resposta final."""
     client = get_groq_client()
@@ -152,8 +164,12 @@ async def run_agent(question: str, history: list[dict] | None = None) -> AgentRe
         message = completion.choices[0].message
 
         if not message.tool_calls:
+            answer = message.content or ""
+            if not _has_reliable_source(source_urls):
+                logger.info("agent_no_reliable_source", question=question)
+                answer = FALLBACK_MESSAGE
             return AgentResult(
-                answer=message.content or "",
+                answer=answer,
                 tool_calls=tool_calls_log,
                 source_urls=sorted(source_urls),
             )
@@ -195,7 +211,15 @@ async def run_agent(question: str, history: list[dict] | None = None) -> AgentRe
                 {"role": "tool", "tool_call_id": tc.id, "content": content}
             )
 
-    # Esgotou as iterações sem resposta final
+    logger.warning("agent_max_iterations_reached", question=question)
+    if not _has_reliable_source(source_urls):
+        return AgentResult(
+            answer=FALLBACK_MESSAGE,
+            tool_calls=tool_calls_log,
+            source_urls=sorted(source_urls),
+        )
+
+    # Esgotou as iterações mas há fontes; pede uma última síntese
     last_user = {"role": "user", "content": "Completa a tua resposta com base nas ferramentas já usadas."}
     completion = await client.chat.completions.create(
         model=settings.llm_model,
@@ -203,8 +227,11 @@ async def run_agent(question: str, history: list[dict] | None = None) -> AgentRe
         temperature=settings.llm_temperature,
         max_tokens=settings.llm_max_tokens,
     )
+    answer = completion.choices[0].message.content or ""
+    if not answer:
+        answer = FALLBACK_MESSAGE
     return AgentResult(
-        answer=completion.choices[0].message.content or "",
+        answer=answer,
         tool_calls=tool_calls_log,
         source_urls=sorted(source_urls),
     )

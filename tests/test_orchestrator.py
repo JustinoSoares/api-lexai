@@ -92,7 +92,8 @@ async def test_run_agent_invokes_tool_then_final_answer(mock_get_client, monkeyp
 
 @pytest.mark.asyncio
 @patch("app.agent.orchestrator.get_groq_client")
-async def test_run_agent_direct_answer_without_tools(mock_get_client):
+async def test_run_agent_fallback_without_reliable_source(mock_get_client):
+    """Sem nenhuma fonte fiável recolhida, devolve a mensagem de fallback (anti-alucinação)."""
     mock_client = AsyncMock()
 
     async def _create(*args, **kwargs):
@@ -103,5 +104,32 @@ async def test_run_agent_direct_answer_without_tools(mock_get_client):
 
     result = await run_agent("Quem é o Presidente de Angola?")
 
-    assert result.answer == "R: resposta sem tools."
+    assert result.answer == orchestrator.FALLBACK_MESSAGE
+    assert "jurista" in result.answer
     assert result.tool_calls == []
+
+
+@pytest.mark.asyncio
+@patch("app.agent.orchestrator.get_groq_client")
+async def test_run_agent_max_iterations_without_source_returns_fallback(mock_get_client, monkeypatch):
+    """Se o loop esgota as iterações sem fontes, nunca devolve resposta inventada."""
+    mock_client = AsyncMock()
+
+    async def _tool_call_loop(*args, **kwargs):
+        return _completion(
+            tool_calls=[_tool_call("fetch_html_tool", {"url": "https://x.ao/404"}, call_id="c1")]
+        )
+
+    async def _fail(*args, **kwargs):
+        raise ValueError("not found")
+
+    mock_client.chat.completions.create = _tool_call_loop
+    mock_get_client.return_value = mock_client
+
+    monkeypatch.setitem(orchestrator.TOOL_REGISTRY, "fetch_html_tool", _fail)
+    monkeypatch.setattr(orchestrator, "MAX_ITERATIONS", 3)
+
+    result = await run_agent("Questão sem fontes?")
+
+    assert result.answer == orchestrator.FALLBACK_MESSAGE
+    assert result.source_urls == []

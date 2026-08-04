@@ -1,12 +1,13 @@
 """Testes do endpoint POST /chat e dos esquemas de entrada/saída."""
 
+import time
 import uuid
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.agent.orchestrator import AgentResult
-from app.api.rate_limit import clear_rate_limits
+import app.api.rate_limit as rate_limit_module
 from app.core.config import settings
 from app.db.session import get_db
 from app.main import app
@@ -16,10 +17,15 @@ from app.schemas.chat import DEFAULT_DISCLAIMER
 
 @pytest.fixture(autouse=True)
 def _no_rate_limit():
-    clear_rate_limits()
+    rate_limit_module.clear_rate_limits()
     settings.rate_limit_enabled = False
     yield
     settings.rate_limit_enabled = False
+
+
+def _force_memory_limiter():
+    """Força o caminho em memória (determinístico, independente do Redis)."""
+    rate_limit_module._redis_failed_until = time.time() + 1000
 
 
 class _FakeResult:
@@ -166,7 +172,7 @@ def _mock_run_agent():
 
 
 def test_rate_limit_blocka_apos_maximo(monkeypatch):
-    clear_rate_limits()
+    _force_memory_limiter()
     settings.rate_limit_enabled = True
     settings.rate_limit_max_requests = 2
     settings.rate_limit_window_seconds = 60
@@ -185,7 +191,7 @@ def test_rate_limit_blocka_apos_maximo(monkeypatch):
 
 
 def test_rate_limit_por_user_header(monkeypatch):
-    clear_rate_limits()
+    _force_memory_limiter()
     settings.rate_limit_enabled = True
     settings.rate_limit_max_requests = 1
     settings.rate_limit_window_seconds = 60

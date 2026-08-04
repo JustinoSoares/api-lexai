@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000"]
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/lexai"
+    redis_url: str = "redis://localhost:6379/0"
 
     groq_api_key: str = ""
     llm_model: str = "llama-3.3-70b-versatile"

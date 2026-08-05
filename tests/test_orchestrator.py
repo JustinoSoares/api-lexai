@@ -82,12 +82,36 @@ async def test_run_agent_invokes_tool_then_final_answer(mock_get_client, monkeyp
             {"title": "T", "href": "https://lex.ao/cidadania", "snippet": "s"}
         ],
     )
+    # grounding: página lida relevante para a pergunta
+    async def _fake_fetch_html(url):
+        return "Lei da Cidadania — cidadania originária angolana, artigo 5.º"
+
+    monkeypatch.setattr(orchestrator, "fetch_html_tool", _fake_fetch_html)
 
     result = await run_agent("Qual a cidadania originária angolana?")
 
     assert result.answer == "R: cidadania originária."
     assert result.tool_calls and result.tool_calls[0]["tool"] == "web_search_tool"
     assert "https://lex.ao/cidadania" in result.source_urls
+
+
+@pytest.mark.asyncio
+@patch("app.agent.orchestrator.get_groq_client")
+async def test_run_agent_fallback_without_reliable_source(mock_get_client):
+    """Sem nenhuma fonte fiável recolhida, devolve a mensagem de fallback (anti-alucinação)."""
+    mock_client = AsyncMock()
+
+    async def _create(*args, **kwargs):
+        return _completion(content="R: resposta sem tools.")
+
+    mock_client.chat.completions.create = _create
+    mock_get_client.return_value = mock_client
+
+    result = await run_agent("Quem é o Presidente de Angola?")
+
+    assert result.answer == orchestrator.FALLBACK_MESSAGE
+    assert "jurista" in result.answer
+    assert result.tool_calls == []
 
 
 @pytest.mark.asyncio
@@ -162,3 +186,42 @@ def test_ground_windows_respeita_orcamento():
     texto = "LEI Y\n" + ("Artigo 1.º texto " + "C" * 5000) * 30
     out = _ground_windows(texto, "artigo 1 texto", budget=4000)
     assert len(out) <= 4000
+
+
+def test_mentions_foreign_jurisdiction():
+    from app.agent.orchestrator import _mentions_foreign_jurisdiction
+
+    assert _mentions_foreign_jurisdiction("Qual é a idade mínima para conduzir no Japão?")
+    assert _mentions_foreign_jurisdiction("Como funciona o divórcio no Brasil?")
+    assert _mentions_foreign_jurisdiction("O que diz a lei nos Estados Unidos?")
+    # com menção a Angola não é considerado estrangeiro
+    assert not _mentions_foreign_jurisdiction("Prazo em Angola e em Portugal?")
+    assert not _mentions_foreign_jurisdiction("O que diz a Lei Geral do Trabalho angolana?")
+
+
+def test_text_matches_query_filtra_diploma_irrelevante():
+    from app.agent.orchestrator import _text_matches_query
+
+    # pergunta sobre lei inexistente: nenhum diploma real contém os termos
+    assert not _text_matches_query(
+        "Lei do Orçamento Geral do Estado para o ano de 1999", "dinossauros domésticos"
+    )
+    # diploma relevante contém termos distintivos
+    assert _text_matches_query(
+        "Lei Geral do Trabalho — o trabalhador tem direito a férias.",
+        "Qual é o prazo de prescrição dos créditos do trabalhador?",
+    )
+    # pergunta só com termos genéricos não filtra
+    assert _text_matches_query("qualquer diploma", "O que diz a lei?")
+
+
+def test_pick_primary_url_ignora_fontes_nao_legais():
+    from app.agent.orchestrator import _pick_primary_url
+
+    # apenas fontes estrangeiras -> sem fonte primária (fallback)
+    assert _pick_primary_url({"https://en.wikipedia.org/wiki/Driving"}) is None
+    # lex.ao tem prioridade sobre restantes legais
+    picked = _pick_primary_url(
+        {"https://legis-palop.org/lei", "https://lex.ao/docs/assembleia-nacional/2020/lei-n-o-40-20/"}
+    )
+    assert picked and "lex.ao" in picked

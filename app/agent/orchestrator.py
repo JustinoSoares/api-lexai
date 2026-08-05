@@ -15,7 +15,7 @@ from app.agent.system_prompt import get_system_prompt
 from app.agent.tools.fetch_html import fetch_html_tool
 from app.agent.tools.fetch_pdf import fetch_pdf_tool
 from app.agent.tools.lexao import resolve_lexao_doc
-from app.agent.tools.web_search import web_search_tool
+from app.agent.tools.web_search import LEGAL_WHITELIST, web_search_tool
 from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
@@ -120,9 +120,23 @@ def _record_sources(source_urls: set[str], name: str, result: Any) -> None:
                 source_urls.add(href)
 
 
-def _has_reliable_source(source_urls: set[str]) -> bool:
-    """Indica se o agente recolheu pelo menos uma fonte concreta e verificável."""
-    return bool(source_urls)
+def _is_legal_source(url: str) -> bool:
+    """Indica se a URL pertence a um domínio jurídico angolano de referência.
+
+    Apenas domínios legais contam como fonte fiável; resultados de sites
+    genéricos/estrangeiros não ancoram respostas (anti-alucinação).
+    """
+    host = (urlparse(url).netloc or "").lower().removeprefix("www.")
+    return any(host == d or host.endswith(f".{d}") for d in LEGAL_WHITELIST)
+
+
+def _reliable_sources(source_urls: set[str]) -> set[str]:
+    return {u for u in source_urls if _is_legal_source(u)}
+
+
+def _has_reliable_source(reliable_sources: set[str]) -> bool:
+    """Indica se o agente ancorou a resposta numa fonte lida e relevante."""
+    return bool(reliable_sources)
 
 
 MAX_GROUND_CHARS = 20000
@@ -138,6 +152,63 @@ _GROUND_STOPWORDS = {
 }
 
 _ARTICLE_HEADER_RE = re.compile(r"(?im)^\s*artigo\s+\d{1,3}\s*[.º°]*[^.\n]*")
+
+# Termos jurídicos genéricos: aparecem em quase todos os diplomas e não
+# sinalizam que um documento é RELEVANTE para a pergunta. Excluídos da
+# verificação de relevância para que um diploma irrelevante não ancore
+# respostas (anti-alucinação em perguntas sobre leis inexistentes).
+_GENERIC_LEGAL_TERMS = {
+    "lei", "leis", "artigo", "artigos", "norma", "normas", "direito",
+    "obrigação", "obrigações", "prazo", "prazos", "regime", "disposição",
+    "disposições", "aplicável", "vigente", "sanção", "sanções", "violação",
+    "requisito", "requisitos", "efeito", "efeitos", "objeto", "âmbito",
+    "conteúdo", "condições", "termos", "finalidade", "código", "códigos",
+    "decreto", "regulamento", "estabelece", "estabelecem", "prevê", "previsto",
+    "prevista", "tributação", "imposto", "impostos",
+    # menções a Angola — constam de praticamente todos os diplomas
+    "angola", "angolano", "angolanos", "angolana", "angolanas",
+    # meses — constam das datas dos diplomas e não indicam relevância
+    "janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho",
+    "agosto", "setembro", "outubro", "novembro", "dezembro",
+}
+
+# Jurisdições estrangeiras: se a pergunta as citar sem referir Angola, o agente
+# não deve ancorar a resposta em direito angolano (fora do seu domínio).
+_FOREIGN_JURISDICTIONS = {
+    "japão", "japao", "brasil", "portugal", "frança", "franca", "espanha",
+    "alemanha", "itália", "italia", "reino unido", "estados unidos", "eua",
+    "moçambique", "mocambique", "cabo verde", "china", "méxico", "mexico",
+    "argentina", "canadá", "canada", "austrália", "australia", "áfrica do sul",
+    "africa do sul", "namíbia", "namibia", "inglaterra", "rússia", "russia",
+    "índia", "india", "suiça", "suica", "bélgica", "belgica", "holanda",
+    "polónia", "polonia",
+}
+
+
+def _mentions_foreign_jurisdiction(query: str) -> bool:
+    """Indica se a pergunta se refere a um país estrangeiro, sem citar Angola."""
+    q = query.lower()
+    if any(t in q for t in ("angola", "angolano", "angolana")):
+        return False
+    return any(j in q for j in _FOREIGN_JURISDICTIONS)
+
+
+def _distinctive_keywords(query: str) -> list[str]:
+    """Palavras da pergunta que, se aparecerem no diploma, o tornam relevante."""
+    return [w for w in _ground_keywords(query) if w not in _GENERIC_LEGAL_TERMS]
+
+
+def _text_matches_query(text: str, query: str) -> bool:
+    """Indica se o texto do diploma contém termos distintivos da pergunta.
+
+    Se a pergunta só tiver termos genéricos, não filtra (devolve True) para
+    não bloquear questões vagas mas dentro do domínio.
+    """
+    keywords = _distinctive_keywords(query)
+    if not keywords:
+        return True
+    t = text.lower()
+    return any(kw in t for kw in keywords)
 
 
 def _ground_keywords(query: str) -> list[str]:
@@ -201,19 +272,27 @@ def _source_rank(url: str) -> tuple[int, int]:
 
 
 def _pick_primary_url(source_urls: set[str]) -> str | None:
-    """Escolhe a URL da fonte primária (lex.ao) para leitura integral."""
-    if not source_urls:
+    """Escolhe a URL da fonte primária (lex.ao) para leitura integral.
+
+    Só considera fontes legais fiáveis: para questões fora do domínio ou sobre
+    leis inexistentes não há fonte primária (devolve None) e o agente deve
+    responder com o fallback em vez de ancorar em conteúdo estrangeiro.
+    """
+    legal = _reliable_sources(source_urls)
+    if not legal:
         return None
-    return min(source_urls, key=_source_rank)
+    return min(legal, key=_source_rank)
 
 
 async def _ground_on_primary(
     source_urls: set[str],
     messages: list[dict],
     tool_calls_log: list[dict],
+    reliable_sources: set[str],
     primary_url: str | None = None,
     query: str = "",
-) -> None:
+    trust_catalog: bool = False,
+) -> bool:
     """Lê o diploma da fonte primária (Lex.ao) e injeta o texto no contexto.
 
     Usa `primary_url` (resolvida do catálogo Lex.ao) quando disponível, para
@@ -221,20 +300,31 @@ async def _ground_on_primary(
     Lex.ao devolvida pela pesquisa. Isto evita ler diplomas errados e ancorar
     a resposta em snippets. O texto é seleccionado por janelas em torno dos
     artigos relevantes à pergunta, dentro do orçamento de tokens.
+
+    O diploma só conta como fonte fiável (entra em `reliable_sources`) se o
+    seu conteúdo contiver termos distintivos da pergunta — caso contrário,
+    tratar-se-ia de um diploma irrelevante (ex.: uma lei de 1999 devolvida
+    para uma pergunta sobre uma lei inexistente). Diplomas resolvidos pelo
+    catálogo Lex.ao (`trust_catalog`) são curados à mão e dispensam o gate.
+    Devolve True se ancorou.
     """
     url = primary_url or _pick_primary_url(source_urls)
     if not url:
-        return
+        return False
     fetch = fetch_pdf_tool if url.lower().endswith(".pdf") else fetch_html_tool
     try:
         text = await fetch(url)
     except Exception as exc:
         logger.warning("agent_ground_failed", url=url, error=str(exc))
-        return
+        return False
     if not isinstance(text, str) or not text.strip():
-        return
+        return False
+    if not trust_catalog and not _text_matches_query(text, query):
+        logger.info("agent_ground_irrelevant", url=url, query=query)
+        return False
     text = _ground_windows(text, query, MAX_GROUND_CHARS)
     source_urls.add(url)
+    reliable_sources.add(url)
     tc_id = f"ground_{len(tool_calls_log)}"
     messages.append(
         {
@@ -255,6 +345,7 @@ async def _ground_on_primary(
     messages.append({"role": "tool", "tool_call_id": tc_id, "content": text})
     tool_calls_log.append({"tool": "fetch_pdf_tool" if url.lower().endswith(".pdf") else "fetch_html_tool", "arguments": {"url": url}, "id": tc_id})
     logger.info("agent_grounded_source", url=url, chars=len(text))
+    return True
 
 
 async def run_agent(question: str, history: list[dict] | None = None) -> AgentResult:
@@ -264,6 +355,7 @@ async def run_agent(question: str, history: list[dict] | None = None) -> AgentRe
 
     tool_calls_log: list[dict] = []
     source_urls: set[str] = set()
+    reliable_sources: set[str] = set()
 
     messages: list[dict] = [system]
     messages.extend((history or [])[-6:])
@@ -287,7 +379,7 @@ async def run_agent(question: str, history: list[dict] | None = None) -> AgentRe
 
         if not message.tool_calls:
             answer = message.content or ""
-            if not _has_reliable_source(source_urls):
+            if not _has_reliable_source(reliable_sources):
                 logger.info("agent_no_reliable_source", question=question)
                 answer = FALLBACK_MESSAGE
             return AgentResult(
@@ -336,18 +428,22 @@ async def run_agent(question: str, history: list[dict] | None = None) -> AgentRe
         # Após a busca garantida (iteração 0), lê o diploma da fonte primária
         # para ancorar a resposta no conteúdo real em vez de snippets. Usa o
         # catálogo Lex.ao para escolher o diploma correcto quando conhecido.
-        if i == 0:
+        # Questões sobre jurisdições estrangeiras não são ancoradas em direito
+        # angolano (fora do domínio -> fallback).
+        if i == 0 and not _mentions_foreign_jurisdiction(question):
             resolved = resolve_lexao_doc(question)
             await _ground_on_primary(
                 source_urls,
                 messages,
                 tool_calls_log,
+                reliable_sources,
                 primary_url=resolved["url"] if resolved else None,
                 query=question,
+                trust_catalog=bool(resolved),
             )
 
     logger.warning("agent_max_iterations_reached", question=question)
-    if not _has_reliable_source(source_urls):
+    if not _has_reliable_source(reliable_sources):
         return AgentResult(
             answer=FALLBACK_MESSAGE,
             tool_calls=tool_calls_log,

@@ -11,6 +11,7 @@ import app.api.rate_limit as rate_limit_module
 from app.core.config import settings
 from app.db.session import get_db
 from app.main import app
+from app.models import Conversation
 
 
 @pytest.fixture(autouse=True)
@@ -155,6 +156,89 @@ def test_chat_validates_question_length():
     client = TestClient(app)
     resp = client.post("/chat", json={"question": "a" * 2001})
     assert resp.status_code == 422
+
+
+class _FakeHistorySession:
+    def __init__(self, conversation, messages, total=None):
+        self._conv = conversation
+        self._messages = messages
+        self._total = total if total is not None else len(messages)
+
+    async def get(self, model, pk):
+        return self._conv
+
+    async def scalar(self, stmt):
+        return self._total
+
+    async def scalars(self, stmt):
+        class _R:
+            def all(self):
+                return self._rows
+        r = _R()
+        r._rows = self._messages
+        return r
+
+
+def _fake_message(id_, role, content, created_at, sources=()):
+    class _Law:
+        def __init__(self, url):
+            self.url = url
+
+    class _Src:
+        def __init__(self, url):
+            self.law_cache = _Law(url)
+
+    msg = type("M", (), {})()
+    msg.id = id_
+    msg.role = role
+    msg.content = content
+    msg.created_at = created_at
+    msg.sources = [_Src(u) for u in sources]
+    return msg
+
+
+def test_conversation_history_paginated():
+    conv_id = uuid.uuid4()
+    msgs = [
+        _fake_message(uuid.uuid4(), "user", "q1", "2024-01-01T00:00:00+00:00", ["https://lex.ao/x"]),
+        _fake_message(uuid.uuid4(), "assistant", "a1", "2024-01-01T00:00:01+00:00"),
+        _fake_message(uuid.uuid4(), "user", "q2", "2024-01-01T00:00:02+00:00"),
+    ]
+    fake = _FakeHistorySession(Conversation(id=conv_id, title="T"), msgs, total=3)
+    app.dependency_overrides[get_db] = lambda: fake
+    client = TestClient(app)
+    try:
+        resp = client.get(f"/conversations/{conv_id}/messages?page=1&per_page=2")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 3
+    assert body["data"][0]["role"] == "user"
+    assert body["data"][0]["sources"] == ["https://lex.ao/x"]
+    assert body["meta"] == {
+        "page": 1,
+        "per_page": 2,
+        "total": 3,
+        "total_pages": 2,
+        "has_next": True,
+        "has_prev": False,
+        "next_page": 2,
+        "prev_page": None,
+    }
+
+
+def test_conversation_history_unknown_returns_404():
+    fake = _FakeHistorySession(None, [])
+    app.dependency_overrides[get_db] = lambda: fake
+    client = TestClient(app)
+    try:
+        resp = client.get(f"/conversations/{uuid.uuid4()}/messages")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 404
 
 
 def _mock_run_agent():

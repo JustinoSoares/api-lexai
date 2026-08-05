@@ -32,6 +32,27 @@ class Settings(BaseSettings):
 
     web_search_enabled: bool = True
 
+    # Domínios jurídicos angolanos priorizados na busca web (JSON list).
+    legal_whitelist_domains: list[str] = [
+        "lex.ao",
+        "diariodarepublica.ao",
+        "governo.gov.ao",
+        "parlamento.ao",
+        "minjusdh.gov.ao",
+        "tribunalsupremo.ao",
+        "legis-palop.org",
+        "lexlink.eu",
+        "vlex.com",
+        "consultorjuridico.com",
+        "angola-forum.com",
+    ]
+    # Termos que reforçam a relevância de um resultado fora da whitelist (JSON list).
+    legal_search_keywords: list[str] = [
+        "lei", "decreto", "diploma", "constituição", "código civil",
+        "código penal", "regulamento", "boletim oficial", "diário da república",
+        "assembleia nacional", "ministério da justiça", "legislação",
+    ]
+
     rate_limit_enabled: bool = False
     rate_limit_max_requests: int = 10
     rate_limit_window_seconds: int = 60

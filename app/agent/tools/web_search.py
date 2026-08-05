@@ -10,27 +10,11 @@ from app.core.config import settings
 
 logger = structlog.get_logger(__name__)
 
-# Whitelist de domínios de fontes jurídicas angolanas de referência.
-# A lógica corresponde ao domínio e aos seus subdomínios.
-# `lex.ao` é a fonte primária e é além disso priorizada à frente das restantes.
-LEGAL_WHITELIST = {
-    "lex.ao",                      # Lex.ao — fonte primária de legislação angolana
-    "diariodarepublica.ao",        # Diário da República (Boletim Oficial / publicação de leis)
-    "governo.gov.ao",              # Governo de Angola
-    "parlamento.ao",               # Assembleia Nacional (produção legislativa)
-    "minjusdh.gov.ao",             # Ministério da Justiça e dos Direitos Humanos
-    "tribunalsupremo.ao",          # Tribunal Supremo
-    "legis-palop.org",             # Legis-PALOP (legislação dos PALOP)
-    "lexlink.eu",                  # Portal jurídico de referência
-    "vlex.com",                    # vLex Angola / iberlei
-    "consultorjuridico.com",       # Portal jurídico de referência
-    "angola-forum.com",            # Portal de legislação angolana
-}# Termos que reforçam a relevância de um resultado mesmo fora da whitelist.
-LEGAL_KEYWORDS = (
-    "lei", "decreto", "diploma", "constituição", "código civil",
-    "código penal", "regulamento", "boletim oficial", "diário da república",
-    "assembleia nacional", "ministério da justiça", "legislação",
-)
+# Whitelist e keywords são configuráveis via .env (LEGAL_WHITELIST_DOMAINS /
+# LEGAL_SEARCH_KEYWORDS), sem mexer no código. `lex.ao` é a fonte primária e é
+# além disso priorizada à frente das restantes.
+LEGAL_WHITELIST = set(settings.legal_whitelist_domains)
+LEGAL_KEYWORDS = tuple(settings.legal_search_keywords)
 
 
 def _is_whitelisted(url: str) -> bool:

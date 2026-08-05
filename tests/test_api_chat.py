@@ -11,8 +11,6 @@ import app.api.rate_limit as rate_limit_module
 from app.core.config import settings
 from app.db.session import get_db
 from app.main import app
-from app.schemas import extract_disclaimer
-from app.schemas.chat import DEFAULT_DISCLAIMER
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +64,7 @@ def _client_with(fake_session, agent_result):
 def test_chat_returns_structured_response(monkeypatch):
     fake = _FakeSession()
     result = AgentResult(
-        answer="Resposta jurídica.\n\n4. **Disclaimer**: nota.",
+        answer="Resposta jurídica.",
         tool_calls=[],
         source_urls=["https://lex.ao/lei-n-o-7-15"],
     )
@@ -88,7 +86,6 @@ def test_chat_returns_structured_response(monkeypatch):
     assert uuid.UUID(body["conversation_id"])
     assert body["answer"].startswith("Resposta jurídica")
     assert body["sources"] == ["https://lex.ao/lei-n-o-7-15"]
-    assert body["disclaimer"] == "nota."
     # persistiu a pergunta do utilizador e a resposta do assistente
     roles = [getattr(m, "role", None) for m in fake.added]
     assert "user" in roles
@@ -159,11 +156,6 @@ def test_chat_validates_question_length():
     resp = client.post("/chat", json={"question": "a" * 2001})
     assert resp.status_code == 422
 
-
-def test_extract_disclaimer():
-    assert extract_disclaimer("x\n\n4. **Disclaimer**: nota informativa.") == "nota informativa."
-    assert extract_disclaimer("apenas resposta") == DEFAULT_DISCLAIMER
-    assert extract_disclaimer("") == DEFAULT_DISCLAIMER
 
 def _mock_run_agent():
     async def fake_run(question, history=None):

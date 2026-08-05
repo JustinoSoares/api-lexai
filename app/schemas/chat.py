@@ -1,15 +1,8 @@
 """Esquemas Pydantic de entrada/saída da API."""
 
-import re
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
-
-DEFAULT_DISCLAIMER = (
-    "A resposta tem cariz informativo e não substitui aconselhamento jurídico "
-    "profissional individualizado. É recomendável consultar um jurista ou advogado "
-    "inscrito na Ordem dos Advogados de Angola."
-)
 
 
 class ChatRequest(BaseModel):
@@ -36,20 +29,3 @@ class ChatResponse(BaseModel):
     question: str
     answer: str
     sources: list[str] = Field(default_factory=list, description="URLs das fontes citadas.")
-    disclaimer: str
-
-
-def extract_disclaimer(answer: str) -> str:
-    """Extrai a nota de disclaimer da 4.ª parte da resposta, se presente."""
-    if not answer:
-        return DEFAULT_DISCLAIMER
-    match = re.search(
-        r"4\.\s*\*?\*?\s*Disclaimer\s*\*?\*?\s*:?\s*",
-        answer,
-        re.IGNORECASE,
-    )
-    if match:
-        content = answer[match.end():].strip()
-        if content:
-            return content
-    return DEFAULT_DISCLAIMER

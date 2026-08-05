@@ -35,16 +35,14 @@ TOOLS: list[dict] = [
         "function": {
             "name": "web_search_tool",
             "description": (
-                "Pesquisa na web por legislação angolana e fontes jurídicas. "
-                "Prioriza sempre o portal Lex.ao (https://lex.ao), a fonte principal, "
-                "e domínios de referência (Diário da República, Assembleia Nacional). "
-                "Usa antes de responder a qualquer pergunta sobre leis, para citar "
-                "legislação verificada."
+                "Pesquisa legislação angolana na web. Prioriza o portal Lex.ao "
+                "(fonte principal) e domínios de referência. Usa antes de "
+                "responder a qualquer pergunta sobre leis."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Consulta de pesquisa em português."},
+                    "query": {"type": "string", "description": "Consulta em português."},
                     "max_results": {"type": "integer", "description": "Nº máximo de resultados (padrão 5)."},
                 },
                 "required": ["query"],
@@ -56,7 +54,7 @@ TOOLS: list[dict] = [
         "function": {
             "name": "fetch_html_tool",
             "description": (
-                "Descarrega uma página HTML e devolve o texto principal (sem menus/anúncios). "
+                "Descarrega uma página HTML e devolve o texto principal. "
                 "Usa para ler o conteúdo de uma página encontrada na pesquisa."
             ),
             "parameters": {
@@ -73,8 +71,8 @@ TOOLS: list[dict] = [
         "function": {
             "name": "fetch_pdf_tool",
             "description": (
-                "Descarrega um documento PDF (ex.: Boletim da República) e devolve o texto extraído. "
-                "Usa quando a fonte é um PDF."
+                "Descarrega um PDF (ex.: Boletim da República) e devolve o texto "
+                "extraído. Usa quando a fonte é um PDF."
             ),
             "parameters": {
                 "type": "object",
@@ -139,7 +137,7 @@ def _has_reliable_source(reliable_sources: set[str]) -> bool:
     return bool(reliable_sources)
 
 
-MAX_GROUND_CHARS = 20000
+MAX_GROUND_CHARS = settings.llm_ground_max_chars
 PRIMARY_DOMAIN = "lex.ao"
 
 _GROUND_STOPWORDS = {
@@ -223,7 +221,7 @@ def _ground_windows(text: str, query: str, budget: int) -> str:
     começo do diploma, inclui também o artigo cujo cabeçalho acompanha termos
     da pergunta — o que antes ficava de fora e levava o LLM a adivinhar.
     """
-    header = text[:1200]
+    header = text[:800]
     keywords = _ground_keywords(query)
     if not keywords:
         return text[:budget]

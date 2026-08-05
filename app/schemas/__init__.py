@@ -1,17 +1,9 @@
 """Esquemas Pydantic da API."""
 
-from app.schemas.chat import (
-    DEFAULT_DISCLAIMER,
-    ChatRequest,
-    ChatResponse,
-    ChatSource,
-    extract_disclaimer,
-)
+from app.schemas.chat import ChatRequest, ChatResponse, ChatSource
 
 __all__ = [
-    "DEFAULT_DISCLAIMER",
     "ChatRequest",
     "ChatResponse",
     "ChatSource",
-    "extract_disclaimer",
 ]

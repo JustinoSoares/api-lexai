@@ -10,7 +10,7 @@ from app.agent.orchestrator import run_agent
 from app.api.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models import Conversation, Message
-from app.schemas import ChatRequest, ChatResponse, extract_disclaimer
+from app.schemas import ChatRequest, ChatResponse
 
 logger = structlog.get_logger(__name__)
 
@@ -60,5 +60,4 @@ async def chat(payload: ChatRequest, db: AsyncSession = Depends(get_db)) -> Chat
         question=payload.question,
         answer=result.answer,
         sources=result.source_urls,
-        disclaimer=extract_disclaimer(result.answer),
     )

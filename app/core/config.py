@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     llm_model: str = "llama-3.3-70b-versatile"
     llm_max_tokens: int = 2048
     llm_temperature: float = 0.3
+    # Orçamento (chars) do texto de um diploma injetado como grounding.
+    # 12000 preserva os artigos relevantes (verificado PAG/LGT) com ~40% menos
+    # tokens que 20000; reduzir abaixo de ~8000 corta artigos relevantes da LGT.
+    llm_ground_max_chars: int = 12000
 
     web_search_enabled: bool = True
 

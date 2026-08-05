@@ -1,6 +1,7 @@
+import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, Text, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -11,11 +12,13 @@ class Source(Base):
 
     __tablename__ = "sources"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    message_id: Mapped[int] = mapped_column(
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    message_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("messages.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    law_cache_id: Mapped[int | None] = mapped_column(
+    law_cache_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("law_cache.id", ondelete="SET NULL"), nullable=True
     )
     snippet: Mapped[str | None] = mapped_column(Text, nullable=True)

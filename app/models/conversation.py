@@ -1,6 +1,7 @@
+import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, String, Text, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -9,7 +10,9 @@ from app.db.base import Base
 class Conversation(Base):
     __tablename__ = "conversations"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -31,8 +34,10 @@ class Conversation(Base):
 class Message(Base):
     __tablename__ = "messages"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    conversation_id: Mapped[int] = mapped_column(
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), index=True, nullable=False
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)

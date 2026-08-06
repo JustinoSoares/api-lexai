@@ -22,6 +22,8 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+    networks:
+      - web
 
   migrate:
     build: .
@@ -36,6 +38,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - web
 
   postgres:
     image: postgres:16-alpine
@@ -54,6 +58,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - web
 
   redis:
     image: redis:7-alpine
@@ -69,6 +75,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - web
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -87,8 +95,14 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
+    networks:
+      - web
 
 volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
+
+networks:
+  web:
+    external: true

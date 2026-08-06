@@ -15,3 +15,5 @@ alembic upgrade head       # aplicar todas as pendentes
 Notas:
 - Verifica o ficheiro gerado em alembic/versions/*.py antes de upgrade (o autogenerate pode não detetar tudo, ex.: constraints complexas).
 - O env.py já lê a DATABASE_URL do .env e usa Base.metadata como target_metadata, por isso basta que os modelos estejam importados em app/models.
+
+docker compose run --rm migrate
